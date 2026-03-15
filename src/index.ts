@@ -147,17 +147,13 @@ async function buildMealMessage(mealTime: string) {
 async function sendDm(client: Client, content: string) {
     const user = await client.users.fetch(DISCORD_USER_ID!)
     await user.send(content)
-    console.log("DM 전송 완료")
 }
 
 async function sendScheduledMeal(client: Client, mealTime: string) {
     try {
         const message = await buildMealMessage(mealTime)
         await sendDm(client, message)
-        console.log(`${mealTime} 전송 완료`)
-    } catch (error) {
-        console.error(`${mealTime} 전송 실패`, error)
-    }
+    } catch (error) {}
 }
 
 function registerSchedules(client: Client) {
@@ -179,7 +175,6 @@ async function main() {
 
     client.once("ready", () => {
         registerSchedules(client)
-        console.log("스케줄 등록 완료: 매일 06:50 조식, 12:00 중식, 18:00 석식")
     })
 
     await client.login(DISCORD_TOKEN)
