@@ -1,30 +1,51 @@
 import axios from "axios"
-import { Client, GatewayIntentBits } from "discord.js"
+import {
+    Client,
+    GatewayIntentBits,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    InteractionType,
+} from "discord.js"
+import { REST, Routes } from "discord.js"
+
 import dotenv from "dotenv"
 import cron from "node-cron"
 
 dotenv.config()
 
 const NEIS_API_URL = "https://open.neis.go.kr/hub/mealServiceDietInfo"
-const USER_ALLERGIES = new Set(["18", "14", "9", "4"])
+const USER_ALLERGIES = new Set(["14"])
+
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN ?? process.env.DISCORD_TOKEN
 const DISCORD_USER_ID =
     process.env.DISCORD_DM_USER_ID ?? process.env.DISCORD_USER_ID
+
 const TIME_ZONE = "Asia/Seoul"
+
 const SCHEDULES = [
     { cron: "50 6 * * *", mealTime: "조식" },
     { cron: "0 12 * * *", mealTime: "중식" },
     { cron: "0 18 * * *", mealTime: "석식" },
 ] as const
 
-function getTodayInfo() {
-    const today = new Date()
+function getDateInfo(offset = 0) {
+    const now = new Date()
+
+    const kst = new Date(now.toLocaleString("en-US", { timeZone: TIME_ZONE }))
+
+    kst.setDate(kst.getDate() + offset)
+
+    const yyyy = kst.getFullYear()
+    const mm = String(kst.getMonth() + 1).padStart(2, "0")
+    const dd = String(kst.getDate()).padStart(2, "0")
 
     return {
-        yyyy: String(today.getFullYear()),
-        mm: String(today.getMonth() + 1).padStart(2, "0"),
-        dd: String(today.getDate()).padStart(2, "0"),
-        todayStr: `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`,
+        yyyy: String(yyyy),
+        mm,
+        dd,
+        dateStr: `${yyyy}${mm}${dd}`,
     }
 }
 
@@ -32,8 +53,8 @@ function normalizeAllergyDisplay(menu: string): string {
     return menu.replace(/\(([^)]+)\)/g, (fullMatch, inner) => {
         const matched = inner
             .split(".")
-            .map((token: string) => token.trim())
-            .filter((token: string) => USER_ALLERGIES.has(token))
+            .map((t: string) => t.trim())
+            .filter((t: string) => USER_ALLERGIES.has(t))
 
         if (matched.length === 0) return ""
         return `(${matched.join(".")})`
@@ -48,37 +69,21 @@ function hasUserAllergy(menu: string): boolean {
         const tokens = block
             .replace(/[()]/g, "")
             .split(".")
-            .map((token) => token.trim())
+            .map((t) => t.trim())
 
-        if (tokens.some((token) => USER_ALLERGIES.has(token))) {
-            return true
-        }
+        if (tokens.some((t) => USER_ALLERGIES.has(t))) return true
     }
 
     return false
 }
 
 function validateEnvironment() {
-    if (!process.env.NEIS_OPEN_KEY) {
-        throw new Error("NEIS_OPEN_KEY 환경변수가 필요합니다.")
-    }
-
-    if (!DISCORD_TOKEN) {
-        throw new Error(
-            "DISCORD_BOT_TOKEN 또는 DISCORD_TOKEN 환경변수가 필요합니다.",
-        )
-    }
-
-    if (!DISCORD_USER_ID) {
-        throw new Error(
-            "DISCORD_DM_USER_ID 또는 DISCORD_USER_ID 환경변수가 필요합니다.",
-        )
-    }
+    if (!process.env.NEIS_OPEN_KEY) throw new Error("NEIS_OPEN_KEY 필요")
+    if (!DISCORD_TOKEN) throw new Error("DISCORD_TOKEN 필요")
+    if (!DISCORD_USER_ID) throw new Error("DISCORD_USER_ID 필요")
 }
 
-async function getGroupedMealMenus() {
-    const { todayStr } = getTodayInfo()
-
+async function getGroupedMealMenus(dateStr: string) {
     const response = await axios.get(NEIS_API_URL, {
         params: {
             KEY: process.env.NEIS_OPEN_KEY,
@@ -87,15 +92,13 @@ async function getGroupedMealMenus() {
             pSize: 100,
             ATPT_OFCDC_SC_CODE: "R10",
             SD_SCHUL_CODE: "8750829",
-            MLSV_FROM_YMD: todayStr,
-            MLSV_TO_YMD: todayStr,
+            MLSV_FROM_YMD: dateStr,
+            MLSV_TO_YMD: dateStr,
         },
     })
 
     const data = response.data.mealServiceDietInfo
-    if (!(data && data[1] && data[1].row)) {
-        return null
-    }
+    if (!(data && data[1] && data[1].row)) return null
 
     const meals = data[1].row
     const grouped: Record<string, string[]> = {}
@@ -106,8 +109,8 @@ async function getGroupedMealMenus() {
 
         const menus = String(meal.DDISH_NM)
             .split(/<br\/?\s*>/i)
-            .map((menu) => menu.trim())
-            .filter((menu) => menu.length > 0)
+            .map((m) => m.trim())
+            .filter((m) => m.length > 0)
 
         grouped[key].push(...menus)
     })
@@ -115,33 +118,45 @@ async function getGroupedMealMenus() {
     return grouped
 }
 
-async function buildMealMessage(mealTime: string) {
-    const { yyyy, mm, dd } = getTodayInfo()
-    const grouped = await getGroupedMealMenus()
+async function getAllMealMenus(mealTime: string, offset = 0) {
+    const { dateStr } = getDateInfo(offset)
+    const grouped = await getGroupedMealMenus(dateStr)
+    if (!grouped) return []
 
-    if (!grouped) {
-        return `오늘(${yyyy}-${mm}-${dd}) 급식 정보가 없습니다.`
-    }
+    return grouped[mealTime]?.map((m) => m.replace(/\s+/g, " ").trim()) ?? []
+}
 
-    const filteredMenus = grouped[mealTime]
-        ?.filter((menu) => hasUserAllergy(menu))
-        .map((menu) =>
-            normalizeAllergyDisplay(menu).replace(/\s+/g, " ").trim(),
-        )
+async function buildMealEmbed(mealTime: string, offset = 0) {
+    const { yyyy, mm, dd } = getDateInfo(offset)
+    const menus = await getAllMealMenus(mealTime, offset)
 
-    if (!filteredMenus || filteredMenus.length === 0) {
-        return `오늘(${yyyy}-${mm}-${dd}) ${mealTime}에는 선택한 알레르기(${[...USER_ALLERGIES].join(", ")})가 포함된 메뉴가 없습니다.`
-    }
+    const description = menus.length === 0 ? "급식 정보 없음" : menus.join("\n")
 
-    return [
-        `오늘(${yyyy}-${mm}-${dd}) ${mealTime} 알레르기 포함 급식`,
-        `대상 알레르기: ${[...USER_ALLERGIES].join(", ")}`,
-        "",
-        mealTime,
-        ...filteredMenus,
-    ]
-        .join("\n")
-        .trim()
+    return new EmbedBuilder()
+        .setTitle(`${yyyy}-${mm}-${dd} ${mealTime}`)
+        .setDescription(description)
+        .setFooter({
+            text: `알레르기: ${[...USER_ALLERGIES].join(", ")}`,
+        })
+}
+
+function mealButtons(offset: number) {
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`meal_breakfast_${offset}`)
+            .setLabel("조식")
+            .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+            .setCustomId(`meal_lunch_${offset}`)
+            .setLabel("중식")
+            .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+            .setCustomId(`meal_dinner_${offset}`)
+            .setLabel("석식")
+            .setStyle(ButtonStyle.Secondary),
+    )
 }
 
 async function sendDm(client: Client, content: string) {
@@ -149,38 +164,108 @@ async function sendDm(client: Client, content: string) {
     await user.send(content)
 }
 
+async function buildMealMessage(mealTime: string) {
+    const { yyyy, mm, dd, dateStr } = getDateInfo(0)
+    const grouped = await getGroupedMealMenus(dateStr)
+
+    if (!grouped) return "급식 정보 없음"
+
+    const filtered = grouped[mealTime]
+        ?.filter((m) => hasUserAllergy(m))
+        .map((m) => normalizeAllergyDisplay(m))
+
+    if (!filtered || filtered.length === 0)
+        return `${yyyy}-${mm}-${dd} ${mealTime} 알레르기 메뉴 없음`
+
+    return [`${yyyy}-${mm}-${dd} ${mealTime}`, ...filtered].join("\n")
+}
+
 async function sendScheduledMeal(client: Client, mealTime: string) {
     try {
-        const message = await buildMealMessage(mealTime)
-        await sendDm(client, message)
-    } catch (error) {}
+        const msg = await buildMealMessage(mealTime)
+        await sendDm(client, msg)
+    } catch {}
 }
 
 function registerSchedules(client: Client) {
-    for (const schedule of SCHEDULES) {
+    for (const s of SCHEDULES) {
         cron.schedule(
-            schedule.cron,
+            s.cron,
             () => {
-                void sendScheduledMeal(client, schedule.mealTime)
+                void sendScheduledMeal(client, s.mealTime)
             },
             { timezone: TIME_ZONE },
         )
     }
 }
 
+const commands = [
+    { name: "급식", description: "오늘 급식" },
+    { name: "내일급식", description: "내일 급식" },
+]
+
+const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN!)
+
 async function main() {
     validateEnvironment()
 
     const client = new Client({ intents: [GatewayIntentBits.Guilds] })
 
+    await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID!), {
+        body: commands,
+    })
+
     client.once("ready", () => {
         registerSchedules(client)
+    })
+
+    client.on("interactionCreate", async (interaction) => {
+        if (
+            interaction.type !== InteractionType.ApplicationCommand &&
+            !interaction.isButton()
+        )
+            return
+
+        if (interaction.isChatInputCommand()) {
+            let offset = 0
+
+            if (interaction.commandName === "내일급식") offset = 1
+
+            const embed = await buildMealEmbed("조식", offset)
+
+            await interaction.reply({
+                embeds: [embed],
+                components: [mealButtons(offset)],
+            })
+        }
+
+        if (interaction.isButton()) {
+            const [_, mealKey, offsetStr] = interaction.customId.split("_")
+
+            const mealMap: any = {
+                breakfast: "조식",
+                lunch: "중식",
+                dinner: "석식",
+            }
+
+            if (!mealKey || !offsetStr) return
+
+            const meal = mealMap[mealKey]
+            const offset = Number(offsetStr)
+
+            const embed = await buildMealEmbed(meal, offset)
+
+            await interaction.update({
+                embeds: [embed],
+                components: [mealButtons(offset)],
+            })
+        }
     })
 
     await client.login(DISCORD_TOKEN)
 }
 
-main().catch((error) => {
-    console.error(error)
+main().catch((err) => {
+    console.error(err)
     process.exit(1)
 })
