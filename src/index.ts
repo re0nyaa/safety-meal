@@ -25,6 +25,10 @@ const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN ?? process.env.DISCORD_TOKEN
 const DISCORD_USER_ID =
     process.env.DISCORD_DM_USER_ID ?? process.env.DISCORD_USER_ID
 
+const SCHOOL_CODE = process.env.SCHOOL_CODE
+const GYOYUGCHEONG_CODE = process.env.GYOYUGCHEONG_CODE
+
+
 const TIME_ZONE = "Asia/Seoul"
 
 const CACHE_DIR = path.resolve(process.cwd(), ".cache")
@@ -151,6 +155,8 @@ function validateEnvironment() {
     if (!process.env.NEIS_OPEN_KEY) throw new Error("NEIS_OPEN_KEY 필요")
     if (!DISCORD_TOKEN) throw new Error("DISCORD_TOKEN 필요")
     if (!DISCORD_USER_ID) throw new Error("DISCORD_USER_ID 필요")
+    if (!SCHOOL_CODE) throw new Error("SCHOOL_CODE 필요")
+    if (!GYOYUGCHEONG_CODE) throw new Error("GYOYUGCHEONG_CODE 필요")
 }
 
 async function getGroupedMealMenus(dateStr: string) {
@@ -187,8 +193,8 @@ async function getMonthlyMealMenus(year: number, month: number) {
             Type: "json",
             pIndex: 1,
             pSize: 100,
-            ATPT_OFCDC_SC_CODE: "R10",
-            SD_SCHUL_CODE: "8750829",
+            ATPT_OFCDC_SC_CODE: GYOYUGCHEONG_CODE,
+            SD_SCHUL_CODE: SCHOOL_CODE,
             MLSV_FROM_YMD: from,
             MLSV_TO_YMD: to,
         },
